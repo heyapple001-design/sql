@@ -1,0 +1,538 @@
+with start_date as
+ ( select 
+  case when sysdate < last_day(trunc(sysdate, 'year')) then
+    last_day(trunc(add_months(last_day(trunc(sysdate, 'year')),-1),'year'))
+  else
+    last_day(trunc(sysdate, 'year'))
+   end   v_start_date   
+  from dual
+  ),
+ bill_aggregated AS (
+  SELECT
+      clnt_clnt_id,
+      subs_subs_id,
+      srls_srls_id,
+      NVL(PACK_PACK_ID,0) AS PACK_PACK_ID,
+      CALC_RTPL_ID AS RTPL_RTPL_ID,
+      SUM(CASE WHEN EXTRACT(MONTH FROM MONTH_END) = 1 THEN AMOUNT_$ ELSE 0 END) AS chrg_01,
+      SUM(CASE WHEN EXTRACT(MONTH FROM MONTH_END) = 2 THEN AMOUNT_$ ELSE 0 END) AS chrg_02,
+      SUM(CASE WHEN EXTRACT(MONTH FROM MONTH_END) = 3 THEN AMOUNT_$ ELSE 0 END) AS chrg_03,
+      SUM(CASE WHEN EXTRACT(MONTH FROM MONTH_END) = 4 THEN AMOUNT_$ ELSE 0 END) AS chrg_04,
+      SUM(CASE WHEN EXTRACT(MONTH FROM MONTH_END) = 5 THEN AMOUNT_$ ELSE 0 END) AS chrg_05,
+      SUM(CASE WHEN EXTRACT(MONTH FROM MONTH_END) = 6 THEN AMOUNT_$ ELSE 0 END) AS chrg_06,
+      SUM(CASE WHEN EXTRACT(MONTH FROM MONTH_END) = 7 THEN AMOUNT_$ ELSE 0 END) AS chrg_07,
+      SUM(CASE WHEN EXTRACT(MONTH FROM MONTH_END) = 8 THEN AMOUNT_$ ELSE 0 END) AS chrg_08,
+      SUM(CASE WHEN EXTRACT(MONTH FROM MONTH_END) = 9 THEN AMOUNT_$ ELSE 0 END) AS chrg_09,
+      SUM(CASE WHEN EXTRACT(MONTH FROM MONTH_END) = 10 THEN AMOUNT_$ ELSE 0 END) AS chrg_10,
+      SUM(CASE WHEN EXTRACT(MONTH FROM MONTH_END) = 11 THEN AMOUNT_$ ELSE 0 END) AS chrg_11,
+      SUM(CASE WHEN EXTRACT(MONTH FROM MONTH_END) = 12 THEN AMOUNT_$ ELSE 0 END) AS chrg_12
+  FROM bis.charges b
+  CROSS JOIN start_date d   -- да, CROSS JOIN с одной строкой — безопасно
+  WHERE b.MONTH_END >= d.v_start_date
+    AND b.MONTH_END < ADD_MONTHS(d.v_start_date, 12)
+    AND NVL(b.no_use,'N')='N'
+    AND (b.DEL_DATE IS NULL OR b.DEL_DATE = TO_DATE('01.01.2000','DD.MM.YYYY'))
+  GROUP BY clnt_clnt_id, subs_subs_id, srls_srls_id, NVL(PACK_PACK_ID,0), CALC_RTPL_ID 
+),
+ srls AS 
+  ( select 
+     seh.subs_subs_id
+     , ssp.srls_srls_id
+     , sl.def
+     , ssp.serv_parm
+     , ssp.navi_user
+     , ssp.navi_date
+     , nvl(ssp.pack_pack_id,0) pack_pack_id
+  FROM bis.serv_histories seh
+    /* ON seh.subs_subs_id = sc.subs_subs_id
+      AND TRUNC (LAST_DAY(ADD_MONTHS(SYSDATE, -1))) BETWEEN seh.start_date AND seh.end_date
+      AND seh.srst_srst_id = 4*/
+  JOIN bis.serv_lists sl
+    ON sl.srls_id = seh.srls_srls_id
+  JOIN bis.serv_subs_parm ssp
+    ON ssp.subs_subs_id = seh.subs_subs_id 
+       AND TRUNC (LAST_DAY(ADD_MONTHS(SYSDATE, -1))) BETWEEN ssp.start_date AND ssp.end_date
+       AND ssp.srls_srls_id = seh.srls_srls_id 
+    WHERE 1=1
+      AND TRUNC (LAST_DAY(ADD_MONTHS(SYSDATE, -1))) BETWEEN seh.start_date AND seh.end_date
+      AND seh.srst_srst_id = 4
+  ),
+  subs AS 
+  (  SELECT /*+ parallel (6) */
+     sc.clnt_clnt_id
+     , sc.subs_subs_id
+     , sp.pack_pack_id
+     , p.name_r pack_name
+     , s.stnd_stnd_id
+     , sh.RTPL_RTPL_ID 
+     , rp.NAME_R
+     , rp.NAME_1
+     , rp.NAME_E
+     , rp.ACTIVE_END  
+     , CASE
+           	-- =========================================================
+            -- 1. АРХИВНЫЙ СПЕЦИАЛЬНЫЙ (архивность И специальность)
+            -- =========================================================
+            WHEN (
+                -- Признаки архивности:
+                rp.ACTIVE_END < SYSDATE OR
+                REGEXP_LIKE(UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')), 
+                           '(АРХ|АРХИВ|АРХИВНЫЙ|_АРХ_|\sАРХ\s|^АРХ)') OR
+                REGEXP_LIKE(UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')), 
+                           'АРХ\s*(0[0-9]|[1-9][0-9])') OR
+                REGEXP_LIKE(UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')), 
+                           'АР\.(0[0-9]|[1-9][0-9])') OR
+                REGEXP_LIKE(UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')), 
+                           'АР(0[0-9]|[1-9][0-9])') OR
+                REGEXP_LIKE(UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')), 
+                           '\sА(0[0-9]|[1-9][0-9])\s|А(0[0-9]|[1-9][0-9])(\)|,|$|;|\.)') OR
+                REGEXP_LIKE(UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')), 
+                           '[А-Я]А(0[0-9]|[1-9][0-9])') OR
+                REGEXP_LIKE(UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')), 
+                           '\s(19[0-9]{2}|20(?:[0-2][0-9]|30))\s') OR
+                UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%АРХ%' OR
+                UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%АРХИВ%' OR
+                UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ДЕЛОВАЯ ЛИГА%' OR
+                UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ДЕЛОВА ЛИГА%' OR
+                UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ИНТЕРНЕТ 300%' OR
+                UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ИНТЕРНЕТ 100%' OR
+                UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ИНТЕРНЕТ ПВЗ%' OR
+                UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%EIPTV ДЛЯ СФ.УСЛ.300%' OR
+                UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%EIPTV ДЛЯ СФ.УСЛ.600%' OR
+                UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%EIPTV ДЛЯ СФ.УСЛ.1200%'
+            ) AND (
+                -- Признаки специальности:
+                UPPER(NVL(rp.NAME_E, '')) LIKE '%SD%' OR
+                UPPER(NVL(rp.NAME_E, '')) LIKE '%IM%' OR
+                UPPER(NVL(rp.NAME_E, '')) LIKE '%SZ%' OR
+				UPPER(NVL(rp.NAME_E, '')) LIKE '%СПЕЦ%' OR
+                UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%СПЕЦ%' OR
+                UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%СПЕЦТАРИФ%' OR
+                UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%СПЕЦЦЕНА%' OR
+                UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ТОРГИ%' OR
+                UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%УД25%' OR
+                UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ИТП%' OR
+                UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ВЫБОРЫ%' OR
+                UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ИНДИВИДУАЛЬН%'
+            ) THEN 'Архивный специальный'
+            
+			-- =========================================================
+            -- 2. АРХИВНЫЙ (специальные группы: лиги, Быть в плюсе, Чистая прибыль, Бизнес СМП)
+            -- =========================================================
+            WHEN UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ВЫСШАЯ ЛИГА%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%БИЗНЕС-ЛИГА%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%НГ ЛИГА%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ДЕЛОВАЯ ЛИГА%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%БЫТЬ В ПЛЮСЕ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ЧИСТАЯ ПРИБЫЛЬ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%БИЗНЕС СМП%'
+            THEN 'Архивный'
+            
+			-- =========================================================
+			-- 3. АРХИВНЫЙ (стандартные признаки: дата, АРХ, годы и т.д.)
+			-- =========================================================
+			WHEN rp.ACTIVE_END < SYSDATE OR
+				 REGEXP_LIKE(UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')), 
+                            '(АРХ|АРХИВ|АРХИВНЫЙ|_АРХ_|\sАРХ\s|^АРХ)') OR
+                 REGEXP_LIKE(UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')), 
+                            'АРХ\s*(0[0-9]|[1-9][0-9])') OR
+                 REGEXP_LIKE(UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')), 
+                            'АР\.(0[0-9]|[1-9][0-9])') OR
+                 REGEXP_LIKE(UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')), 
+                            'АР(0[0-9]|[1-9][0-9])') OR
+                 REGEXP_LIKE(UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')), 
+                            '\sА(0[0-9]|[1-9][0-9])\s|А(0[0-9]|[1-9][0-9])(\)|,|$|;|\.)') OR
+                 REGEXP_LIKE(UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')), 
+                            '[А-Я]А(0[0-9]|[1-9][0-9])') OR
+                 REGEXP_LIKE(UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')), 
+							'\s(19[0-9]{2}|20(?:[0-2][0-9]|30))\s') OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%АРХ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%АРХИВ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ДЕЛОВАЯ ЛИГА%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ДЕЛОВА ЛИГА%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ИНТЕРНЕТ 300%' OR
+                 (UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ИНТЕРНЕТ 100%'
+				 AND UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) NOT LIKE '%ШКОЛЬНЫЙ%') OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ИНТЕРНЕТ ПВЗ%' OR
+				 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%УСКОРЕНИЕ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%EIPTV ДЛЯ СФ.УСЛ.300%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%EIPTV ДЛЯ СФ.УСЛ.600%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%EIPTV ДЛЯ СФ.УСЛ.1200%' OR
+				(UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%БИЗНЕС ЦЕНТР%' 
+				AND REGEXP_LIKE(UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')), '20[0-3][0-9]')
+				AND TO_NUMBER(REGEXP_SUBSTR(UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')), '20([0-3][0-9])', 1, 1, NULL)) < EXTRACT(YEAR FROM SYSDATE)
+				) OR
+				(UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%БИЗНЕС-ЦЕНТР%' 
+				AND REGEXP_LIKE(UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')), '20[0-3][0-9]')
+				AND TO_NUMBER(REGEXP_SUBSTR(UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')), '20([0-3][0-9])', 1, 1, NULL)) < EXTRACT(YEAR FROM SYSDATE)
+				)
+			THEN 'Архивный'
+            
+			-- =========================================================
+			-- 4. АКТИВНЫЙ НЕПУБЛИЧНЫЙ
+			-- =========================================================
+			WHEN (UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ФОРСАЖ%' OR
+				UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ФОРСАЖ+%' OR
+				UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%СТАРТ%' OR
+				UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ПРИВИЛЕГИЯ%' OR
+				UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%БИЗНЕС-БАЛАНС%' OR
+				UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ДРАЙВ%' OR
+				UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ЛО.ТВ%' OR
+				UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ЛОТВ%' OR
+				UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%EIPTVЛО%' OR
+				UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%WIFI%900%' OR
+				(UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%АПАРТ%' 
+				AND NOT (REGEXP_LIKE(UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')), 
+                           '(АРХ|АРХИВ|АРХИВНЫЙ|_АРХ_|\sАРХ\s|^АРХ)') OR
+						REGEXP_LIKE(UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')), 
+                           'АРХ\s*(0[0-9]|[1-9][0-9])') OR
+						REGEXP_LIKE(UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')), 
+                           'АР\.(0[0-9]|[1-9][0-9])') OR
+						REGEXP_LIKE(UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')), 
+                           'АР(0[0-9]|[1-9][0-9])') OR
+						REGEXP_LIKE(UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')), 
+                           '\sА(0[0-9]|[1-9][0-9])\s|А(0[0-9]|[1-9][0-9])(\)|,|$|;|\.)') OR
+						REGEXP_LIKE(UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')), 
+                           '\s(19[0-9]{2}|20(?:[0-2][0-9]|30))\s') OR
+						UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%АРХ%' OR
+						UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%АРХИВ%'))
+				) AND NOT (UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%БЫТЬ В ПЛЮСЕ%')
+			THEN 'Активный непубличный'            
+            
+            
+            -- =========================================================
+            -- 5. СПЕЦИАЛЬНЫЙ (есть признаки специальности, но нет архивности)
+            -- =========================================================
+            WHEN UPPER(NVL(rp.NAME_E, '')) LIKE '%SD%' OR
+                 UPPER(NVL(rp.NAME_E, '')) LIKE '%IM%' OR
+                 UPPER(NVL(rp.NAME_E, '')) LIKE '%SZ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%СПЕЦ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%СПЕЦТАРИФ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%СПЕЦЦЕНА%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ТОРГИ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%УД25%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ИТП%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ВЫБОРЫ%' OR
+				 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ИТП26 АВТОР WIFI РАСШ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ИНДИВИДУАЛЬН%'
+            THEN 'Специальный'
+            
+            -- =========================================================
+            -- 6. АКТИВНЫЕ ПРОЧИЕ (ОТА) - телефонные тарифы
+            -- =========================================================
+            WHEN UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%REX%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%REX -%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%АТ/ТЕЛЕКС%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%АТ/%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ТАКСОФОН УНИВЕРСАЛЬНЫЙ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ТАКСОФОН%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ПЕРЕГОВОРНЫЙ ПУНКТ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%РЕЧЕВОЙ ИНФОРМ.СЕРВИС%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%РЕЧЕВОЙ ИНФОРМ%' OR
+				 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ОПТИМАЛЬНЫЙ ПАКЕТ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%БРОНИРОВАНИЕ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%КАРТОЧНАЯ ПЛАТФОРМА%'
+            THEN 'Активные прочие (ОТА)'
+            
+            -- =========================================================
+            -- 7. АКТИВНЫЕ ТАРИФЫ (интернет, VPN, РТК Тендер, корп. интернет, Wi-Fi, Техканал для ВАТС и др.)
+            -- =========================================================
+            WHEN UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ШКОЛЬНЫЙ ИНТЕРНЕТ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ШКОЛЬН ИНТ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ИНТЕРНЕТ БШПД%' OR				 
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%СКОРОСТЬ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ДЕЛОВОЙ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%КИБЕРСКОРОСТЬ%' OR
+				 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ВНУТРИ СЕТИ%' OR
+				 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%MLM%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ОЖН%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%M2M_КОНТРОЛЬ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%M2M_БИЗНЕС%' OR
+				 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%M2M БИЗНЕС%' OR
+				 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%M2M КОНТРОЛЬ%' OR
+				 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%M2M%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ТЕРМИНАЛ%' OR
+				 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%БЕЗОПАСНОСТЬ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%КОРПОРАТИВНЫЙ ИНТЕРНЕТ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%КОРПОРАТИВНЫЙ DIGITAL%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ИНТЕРНЕТ ЦОД%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%КОМФОРТ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%РОСТЕЛЕКОМ ТЕНДЕР%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%АБОНЕНТСКИЙ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%БЕЗЛИМИТНЫЙ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ПОВРЕМЕННЫЙ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%КОМБИНИРОВАННЫЙ%' OR
+				 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ВН/ЗОНА ПО ДОП СОГЛ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ВН/ЗОНА%' OR
+				 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%EIPTV%' OR
+				 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ТВ ДЛЯ СФЕРЫ УСЛУГ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%EIPTVТВ ДЛЯ СФ%' OR
+				 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ТВ ДЛЯ ДЕТЕЙ%' OR
+				 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ТВ ДЛЯ ОФИСА%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%EIPTV ТВ ДЛЯ ОФИСА%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%EIPTV ОТТ-ДЛЯ ОФИСА%' OR
+				 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ТВ ДЛЯ МОБИЛЬНЫХ УСТРОЙСТВ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%EIPTVТВ ДЛЯ МОБ%' OR
+				 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ДЛЯ ГОСТИНИЦ СТАНДАРТ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ДЛЯ ГОСТИНИЦ ЛЮКС%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ДЛЯ ГОСТИНИЦ ПРЕСТИЖ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%EIPTV ОТЕЛЬ СТАНДАРТ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%EIPTV ОТЕЛЬ ЛЮКС%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%EIPTV ОТЕЛЬ ПРЕСТИЖ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ДЛЯ ГОСТИНИЦ DVB-C%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ДЛЯ ГОСТИНИЦ ПАРТНЕРСКИЙ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ДЛЯ ГОСТИНИЦ СТАНДАРТ СУТОЧНЫЙ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ДЛЯ ГОСТИНИЦ ЛЮКС СУТОЧНЫЙ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ДЛЯ ГОСТИНИЦ ПРЕСТИЖ СУТОЧНЫЙ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%EIPTV ОТ. СТАНДАРТ СУ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%EIPTV ОТЕЛЬ ЛЮКС СУТК%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%КОРП ИНТЕРНЕТ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%VPN%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%РТК ТЕНДЕР%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%WI-FI РАДАР%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%WI-FI РАДАР ТП1%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%WI-FI РАДАР ТП2%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%WI-FI РАДАР ТП3%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ТП НАЧАЛЬНЫЙ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%НАЧ. WIFI%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%LIGHT WI-FI%' OR
+				 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%Д.ГОСТ НАЧАЛЬНЫЙ%' OR
+				 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%Д.ГОСТ УЛУЧШЕН%' OR
+				 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%Д.ГОСТ РАСШИРЕН%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ТП УЛУЧШЕННЫЙ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ТП РАСШИРЕННЫЙ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%WIFIGOСТРА%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%АВТОРИЗАЦИЯ WIFI%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%АВТОРИЗАЦИЯ WI-FI%' OR
+                 (UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%WIFI%' AND
+                  (UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%БАЗОВЫЙ%' OR
+                   UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%СТАНДАРТНЫЙ%' OR
+                   UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%РАСШИРЕННЫЙ%')) OR
+                 (UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%БИЗНЕС ЦЕНТР%' OR
+                  UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%БИЗНЕС-ЦЕНТР%') OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ТЕХКАНАЛ ДЛЯ ВН%' OR
+				 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ТЕХКАНАЛ ВН%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ТЕХКАНАЛ ДЛЯ ВАТС%' OR
+				 (
+				 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ТЕХКАНАЛ%' AND
+				 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ВАТС%'
+				 ) OR
+				 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ТЕХКАНАЛ ВАТС%'
+            THEN 'Активный'
+            
+            -- =========================================================
+            -- 8. АКТИВНЫЕ ОБЛАЧНЫЕ (ВАТС, 8800, умные сервисы, видеонаблюдение)
+            -- =========================================================
+            WHEN UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ВИРТУАЛЬНАЯ АТС%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ВИРТУАЛЬНАЯ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ВИРТУАЛЬНЫЙ НОМЕР%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%БЕСПЛАТНЫЙ ВЫЗОВ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ИНТЕЛЛЕКТУАЛЬНАЯ СЕТЬ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ИС ПЛАТФОРМЫ ИСС%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ИС ПЛАТФОРМЫ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%УМНЫЙ ДОМОФОН%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%УМНЫЙ ДОМОФОН УК%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%УМНЫЙ ДОМОФОН ДК%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%УМНЫЙ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ВИДЕОНАБЛЮДЕНИЕ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%СКУД%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ШЛАГБАУМ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%СЧЕТЧИК%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ВАТС%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%8800%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%8-800%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ОБЛАЧНАЯ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ОБЛАЧНЫЙ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%CLOUD%'
+            THEN 'Активные Облачные'
+            
+            -- =========================================================
+            -- 9. АПАРТ АРХИВНЫЙ НЕПУБЛИЧНЫЙ
+            -- =========================================================
+            WHEN UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%АПАРТ%' AND
+                 (REGEXP_LIKE(UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')), 
+                             '(АРХ|АРХИВ|АРХИВНЫЙ|_АРХ_|\sАРХ\s|^АРХ)') OR
+                  REGEXP_LIKE(UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')), 
+                             'АРХ\s*(0[0-9]|[1-9][0-9])') OR
+                  REGEXP_LIKE(UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')), 
+                             'АР\.(0[0-9]|[1-9][0-9])') OR
+                  REGEXP_LIKE(UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')), 
+                             'АР(0[0-9]|[1-9][0-9])') OR
+                  REGEXP_LIKE(UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')), 
+                             '\sА(0[0-9]|[1-9][0-9])\s|А(0[0-9]|[1-9][0-9])(\)|,|$|;|\.)') OR
+                  REGEXP_LIKE(UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')), 
+                             '\s(19[0-9]{2}|20(?:[0-2][0-9]|30))\s') OR
+                  UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%АРХ%' OR
+                  UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%АРХИВ%')
+            THEN 'Архивный непубличный'
+            
+            -- =========================================================
+            -- 10. ТЕХНОЛОГИЧЕСКИЙ
+            -- =========================================================
+            WHEN UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%УНИВЕРСАЛЬН%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%УН.И-НЕТ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%УН.ИНТЕРНЕТ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%УН. И-НЕТ%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%УНИНТЕРНЕТ%' OR
+                 REGEXP_LIKE(UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')), 'УН\.?И?-?НЕТ') OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ТЕЛЕМАТИКА%' OR
+				 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%Т/МАТИКА%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ХОСТИНГ%' OR
+				 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ХОСТ.%' OR
+                 UPPER(NVL(rp.NAME_R, '') || ' ' || NVL(rp.NAME_1, '')) LIKE '%ИНТЕРНЕТ-ТЕХНОЛОГИЧЕСКИЙ%'
+            THEN 'Технологический'
+            
+            -- =========================================================
+            -- 11. ПРОЧИЕ (все, что не попало в категории)
+            -- =========================================================
+            ELSE 'Прочие'
+        END AS tarif_status
+   FROM bis.subs_clnt_histories sc
+   JOIN bis.client_histories ch 
+        ON ch.clnt_clnt_id = sc.clnt_clnt_id
+        AND TRUNC (LAST_DAY(ADD_MONTHS(SYSDATE,-1))) BETWEEN ch.start_date AND ch.end_date
+        AND ch.hist_jrtp_id = 2
+        AND ch.ctyp_ctyp_id NOT IN (4,102,202 )
+        AND ch.blgr_blgr_id NOT IN (9)
+        AND ch.brnc_brnc_id IN (11,12,14,15,16,17,18)
+    JOIN bis.subscribers s
+    ON s.subs_id = sc.subs_subs_id
+  JOIN bis.subs_histories sh
+    ON sh.subs_subs_id = sc.subs_subs_id AND SYSDATE BETWEEN sh.start_date AND sh.end_date 
+  JOIN bis.rate_plans rp
+    ON rp.rtpl_id = sh.rtpl_rtpl_id  
+       AND SYSDATE BETWEEN rp.start_date AND rp.end_date
+   JOIN 
+   (SELECT  sp_all.subs_subs_id, sp_all.pack_pack_id 
+     from
+       ( SELECT sp1.subs_subs_id, sp1.pack_pack_id   
+         FROM  bis.SUBS_PACKS sp1
+         WHERE SYSDATE BETWEEN sp1.start_date AND sp1.end_date 
+         UNION ALL 
+         SELECT DISTINCT   sp0.subs_id subs_subs_id, 0 AS pack_pack_id  
+         FROM  bis.subscribers sp0
+         WHERE sp0.stnd_stnd_id in (3, 150)  
+        ) sp_all
+      ) sp ON sp.subs_subs_id= sc.subs_subs_id   
+  LEFT JOIN  bis.packs p on p.pack_id=sp.pack_pack_id     
+   WHERE 1 = 1
+   AND sc.sbst_sbst_id IN (2,3)
+   AND TRUNC (LAST_DAY(ADD_MONTHS(SYSDATE, -1))) BETWEEN sc.start_date AND sc.end_date 
+   AND s.stnd_stnd_id in (3, 150)  
+  ),
+dnumber AS 
+   (select /*+ parallel (6) */
+   ph.subs_subs_id, ns.msisdn
+  from bis.phone_histories ph   
+  left join bis.number_sets ns on ns.nset_id=ph.nset_nset_id 
+  where (1=1)
+  and ph.ncat_ncat_id=1   
+  and current_date BETWEEN ph.START_DATE AND ph.END_DATE 
+  ),
+    clnt as  
+  (SELECT /*+ parallel (6) */
+    (CASE WHEN ch.hist_jrtp_id=2 THEN 'ЮЛ'
+             WHEN ch.hist_jrtp_id=1 THEN 'ФЛ'
+             ELSE ''
+         END) jrtp_nm
+     , ch.brnc_brnc_id    
+     , b.name branch_nm
+     , ch.clnt_clnt_id
+     , ch.name client_name
+     , dp1.name rus_nm
+     , dp.name ckto_nm
+     , ch.account
+     , ja.inn
+     , (SELECT ctp.def
+          FROM bis.client_types ctp
+         WHERE ctp.ctyp_id=ch.ctyp_ctyp_id) type_clnt
+     , (SELECT dv.def
+          FROM bis.client_dictionaries cd
+          JOIN bis.dict_values dv ON dv.divl_id = cd.divl_divl_id
+         WHERE ch.clnt_clnt_id = cd.clnt_clnt_id
+           AND dv.dict_dict_id = 1022
+           AND cd.del_user IS NULL) macrosegm
+     , (SELECT dv.def
+          FROM bis.client_dictionaries cd
+          JOIN bis.dict_values dv ON dv.divl_id = cd.divl_divl_id
+         WHERE ch.clnt_clnt_id = cd.clnt_clnt_id
+           AND dv.dict_dict_id = 1020
+           AND cd.del_user IS NULL) segm
+     , (SELECT dv.def
+          FROM bis.client_dictionaries cd
+          JOIN bis.dict_values dv ON dv.divl_id = cd.divl_divl_id
+         WHERE ch.clnt_clnt_id = cd.clnt_clnt_id
+           AND dv.dict_dict_id = 1021
+           AND cd.del_user IS NULL) subsegm
+     , (SELECT dv.def
+          FROM bis.client_dictionaries cd
+          JOIN bis.dict_values dv ON dv.divl_id = cd.divl_divl_id
+         WHERE ch.clnt_clnt_id = cd.clnt_clnt_id
+           AND dv.dict_dict_id = 150
+           AND cd.del_user IS NULL) k_code
+ FROM bis.client_histories ch
+  JOIN bis.branches b   ON b.brnc_id = ch.brnc_brnc_id
+  JOIN bis.departments dp  ON dp.dprm_id = ch.dprm_dprm_id
+  LEFT JOIN bis.departments dp1  ON dp1.dprm_id = dp.par_dprm_id
+  JOIN bis.dlv_histories dh   ON ch.clnt_clnt_id = dh.clnt_clnt_id AND SYSDATE BETWEEN dh.start_date AND dh.end_date
+  JOIN bis.jur_addresses ja  ON ch.clnt_clnt_id = ja.clnt_clnt_id   AND SYSDATE BETWEEN ja.start_date AND ja.end_date
+ WHERE 1 = 1
+   AND ch.hist_jrtp_id = 2
+   AND ch.ctyp_ctyp_id NOT IN (4, 102, 202)
+   AND ch.blgr_blgr_id NOT IN (9)
+   AND ch.brnc_brnc_id IN (11, 12, 14, 15, 16, 17, 18)
+   AND SYSDATE BETWEEN ch.start_date AND ch.end_date
+   )
+ SELECT
+     clnt.jrtp_nm "ФЛ/ЮЛ"
+     ,clnt.brnc_brnc_id "КОД ФИЛИАЛА"
+     , clnt.branch_nm "РФ"
+     , clnt.clnt_clnt_id
+     , clnt.account "ЛС"
+     , clnt.inn "ИНН"
+     , clnt.type_clnt "ТИП_КЛИЕНТА"
+     , clnt.macrosegm "МАКРОСЕГМЕНТ"
+     , clnt.segm "СЕГМЕНТ"
+     , clnt.subsegm "ПОДСЕГМЕНТ"
+     , clnt.k_code "ПО МЕТОДИКЕ ГД"
+     , clnt.client_name "НАИМЕН_КЛИЕНТА"
+     , subs.subs_subs_id "АБОНЕНТ"
+     , subs.stnd_stnd_id "СТАНДАРТ"
+     , n.msisdn "НОМЕР УСТРОЙСТВА"
+     , subs.pack_pack_id "ИД ПАКЕТА"
+     , subs.pack_name "ПАКЕТ"
+     , subs.name_r "ТАРИФНЫЙ ПЛАН"
+     , subs.NAME_1 "АЛЬТЕРНАТИВНОЕ НАЗВАНИЕ"
+     , subs.NAME_E "НАЗВАНИЕ НА АНГЛИЙСКОМ"
+     , subs.ACTIVE_END "ДАТА ОКОНЧАНИЯ ТАРИФА"
+     , subs.tarif_status "СТАТУС ТАРИФНОГО ПЛАНА"
+     , subs.RTPL_RTPL_ID "ИД ТАРИФНОГО ПЛАНА"
+     , nvl(srls.srls_srls_id,0) "ИД УСЛУГИ"
+     , srls.def "УСЛУГА"
+     , nvl(srls.serv_parm,0) "ИПУ"
+     , srls.navi_user "КТО УСТАНОВИЛ ИПУ"
+     , srls.navi_date " КОГДА_УСТАНОВИЛ_ИПУ"
+     , nvl(ch.chrg_01,0) "НАЧИСЛЕНИЯ ЗА ЯНВАРЬ"
+     , nvl(ch.chrg_02,0) "НАЧИСЛЕНИЯ ЗА ФЕВРАЛЬ"
+     , nvl(ch.chrg_03,0) "НАЧИСЛЕНИЯ ЗА МАРТ"
+     , nvl(ch.chrg_04,0) "НАЧИСЛЕНИЯ ЗА АПРЕЛЬ"
+     , nvl(ch.chrg_05,0) "НАЧИСЛЕНИЯ ЗА МАЙ"
+     , nvl(ch.chrg_06,0) "НАЧИСЛЕНИЯ ЗА ИЮНЬ"
+     , nvl(ch.chrg_07,0) "НАЧИСЛЕНИЯ ЗА ИЮЛЬ"
+     , nvl(ch.chrg_08,0) "НАЧИСЛЕНИЯ ЗА АВГУСТ"
+     , nvl(ch.chrg_09,0) "НАЧИСЛЕНИЯ ЗА СЕНТЯБРЬ"
+     , nvl(ch.chrg_10,0) "НАЧИСЛЕНИЯ ЗА ОКТЯБРЬ"
+     , nvl(ch.chrg_11,0) "НАЧИСЛЕНИЯ ЗА НОЯБРЬ"
+     , nvl(ch.chrg_12,0) "НАЧИСЛЕНИЯ ЗА ДЕКАБРЬ"
+     , nvl(ch.chrg_01+ch.chrg_02+ch.chrg_03+ch.chrg_04+ch.chrg_05+ch.chrg_06+
+       ch.chrg_07+ch.chrg_08+ch.chrg_09+ch.chrg_10+ch.chrg_11+ch.chrg_12,0) "ТЕКУЩИЙ_БАЛАНС"
+   FROM subs
+   JOIN CLNT ON clnt.clnt_clnt_id=subs.clnt_clnt_id
+   LEFT JOIN dnumber n ON n.subs_subs_id = subs.subs_subs_id
+   LEFT JOIN srls ON srls.subs_subs_id = subs.subs_subs_id AND srls.pack_pack_id=subs.pack_pack_id
+   LEFT JOIN bill_aggregated ch ON ch.CLNT_CLNT_ID =subs.clnt_clnt_id AND ch.subs_subs_id=subs.subs_subs_id --AND ch.srls_srls_id=srls.srls_srls_id 
+                           AND  ch.pack_pack_id=subs.pack_pack_id AND ch.rtpl_rtpl_id = subs.rtpl_rtpl_id                           
+   WHERE to_char(clnt.brnc_brnc_id) LIKE '~p_branc_id~'
+         AND  to_char(subs.stnd_stnd_id) LIKE '~p_stnd_id~'
+         AND   subs.rtpl_rtpl_id in (~spisok_rtpl_id~)
+    ORDER BY  clnt.brnc_brnc_id, subs.clnt_clnt_id, subs.subs_subs_id

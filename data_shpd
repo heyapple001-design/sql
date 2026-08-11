@@ -1,0 +1,109 @@
+SELECT sc.jrtp_nm "ФЛ/ЮЛ"
+     , sc.branch_nm "РФ"
+     , sc.billgrp_nm "БИЛЛ_ГРУППА"
+     , sc.clnt_clnt_id
+     , sc.rus_nm "РУС" 
+     , sc.ckto_nm "ЦКТО"
+     , sc.account "ЛС"
+     , sc.inn "ИНН"
+     , sc.class_clnt "КЛАСС_КЛИЕНТА"
+     , sc.type_clnt "ТИП_КЛИЕНТА"
+     , sc.macrosegm "МАКРОСЕГМЕНТ"
+     , sc.segm "СЕГМЕНТ"
+     , sc.subsegm "ПОДСЕГМЕНТ"
+     , sc.k_code "ПО МЕТОДИКЕ ГД"
+     , sc.class_serv "КЛАСС ОБСЛУЖИВАНИЯ"
+     , sc.client_category "КАТЕГОРИЯ КЛИЕНТА"
+     , sc.email_jur "ПОЧТА_ЮА"
+     , sc.phone_jur "ТЕЛЕФОН_ЮА"
+     , sc.phone_dlv "ТЕЛ_ДОСТ"
+     , sc.email_dlv "ПОЧТА_ДОСТ"
+     , sc.address "ПОЧТОВЫЙ_АДРЕС"
+     , sc.manager "ПЕРСОНАЛЬНЫЙ МЕНЕДЖЕР"
+     , sc.name "НАИМЕН_КЛИЕНТА"
+     , sc.ltc_name "НАИМЕН_ЛТЦ"
+     , sc.subs_id
+     , sc.standart "СТАНДАРТ"
+     , sc.shema
+     , sc.msisdn
+     , sc.login_status "СТАТУС_ЛОГИНА"
+     , sc.rate_plan "ТАРИФНЫЙ_ПЛАН"
+     , sc.base_speed "БАЗОВАЯ_СКОРОСТЬ_ТП"
+     , sc.incl_date "ДАТА_ПОДКЛЮЧ"
+     , sc.technology "ТЕХНОЛОГИЯ"
+     , (SELECT COUNT(ipu.srls_srls_id)
+          FROM crs.rep_abon_base_dmt_14819_14820_subs ipu
+         WHERE ipu.subs_subs_id = sc.subs_id
+           AND ipu.serv_parm = 1    
+         GROUP BY ipu.subs_subs_id) "ИПУ=1"
+    ,  (SELECT COUNT(ipu.srls_srls_id)
+          FROM crs.rep_abon_base_dmt_14819_14820_subs ipu
+         WHERE ipu.subs_subs_id = sc.subs_id
+           AND ipu.serv_parm != 1
+         GROUP BY ipu.subs_subs_id) "ИПУ<>1"  
+     , (SELECT listagg(ipu.srls_srls_id||'; ') within group (order by ipu.srls_srls_id)
+          FROM crs.rep_abon_base_dmt_14819_14820_subs ipu
+         WHERE ipu.subs_subs_id = sc.subs_id
+           AND ipu.serv_parm != 1
+         GROUP BY ipu.subs_subs_id) "СПИСОК SRLS_SRLS_ID"
+     , (SELECT listagg(ipu.def||'; ') within group (order by ipu.def)
+          FROM crs.rep_abon_base_dmt_14819_14820_subs ipu
+         WHERE ipu.subs_subs_id = sc.subs_id
+           AND ipu.serv_parm != 1
+         GROUP BY ipu.subs_subs_id) "СПИСОК УСЛУГА_С_ПРИМЕНЕНИЕМ_ИПУ"
+     , (SELECT listagg(ipu.serv_parm||'; ') within group (order by ipu.serv_parm)
+          FROM crs.rep_abon_base_dmt_14819_14820_subs ipu
+         WHERE ipu.subs_subs_id = sc.subs_id
+           AND ipu.serv_parm != 1
+         GROUP BY ipu.subs_subs_id) "СПИСОК ИНДИВИДУАЛЬНЫЙ_ПАРАМЕТР_УСЛУГ"
+     , (SELECT listagg(ipu.navi_user||'; ') within group (order by ipu.navi_user)
+          FROM crs.rep_abon_base_dmt_14819_14820_subs ipu
+         WHERE ipu.subs_subs_id = sc.subs_id
+           AND ipu.serv_parm != 1
+         GROUP BY ipu.subs_subs_id) "СПИСОК КТО_УСТАНОВИЛ_ИПУ"
+     , (SELECT listagg(LPAD(ipu.navi_date, 10)||'; ') within group (order by ipu.navi_date)
+          FROM crs.rep_abon_base_dmt_14819_14820_subs ipu
+         WHERE ipu.subs_subs_id = sc.subs_id
+           AND ipu.serv_parm != 1
+         GROUP BY ipu.subs_subs_id) "СПИСОК КОГДА_УСТАНОВИЛ_ИПУ"
+     , nvl(sc.chrg_01,0)  "НАЧИСЛЕНИЯ ЗА ЯНВАРЬ"
+     , nvl(sc.chrg_02,0)  "НАЧИСЛЕНИЯ ЗА ФЕВРАЛЬ"
+     , nvl(sc.chrg_03,0)  "НАЧИСЛЕНИЯ ЗА МАРТ"
+     , nvl(sc.chrg_04,0) "НАЧИСЛЕНИЯ ЗА АПРЕЛЬ"
+     , nvl(sc.chrg_05,0) "НАЧИСЛЕНИЯ ЗА МАЙ"
+     , nvl(sc.chrg_06,0) "НАЧИСЛЕНИЯ ЗА ИЮНЬ"
+     , nvl(sc.chrg_07,0) "НАЧИСЛЕНИЯ ЗА ИЮЛЬ"
+     , nvl(sc.chrg_08,0) "НАЧИСЛЕНИЯ ЗА АВГУСТ"
+     , nvl(sc.chrg_09,0) "НАЧИСЛЕНИЯ ЗА СЕНТЯБРЬ"
+     , nvl(sc.chrg_10,0)  "НАЧИСЛЕНИЯ ЗА ОКТЯБРЬ"
+     , nvl(sc.chrg_11,0)  "НАЧИСЛЕНИЯ ЗА НОЯБРЬ"
+     , nvl(sc.chrg_12,0)  "НАЧИСЛЕНИЯ ЗА ДЕКАБРЬ"
+     , nvl(sc.cur_balance,0)  "ТЕКУЩИЙ_БАЛАНС"
+     , sc.region
+     , sc.tip_np
+     , sc.city
+     , sc.tip_ul
+     , sc.street
+     , sc.house
+     , sc.korp
+     , sc.apartment
+     , nvl(sc.orpon,0)  "ОРПОН"
+     , sc.packs "ПАКЕТЫ_ВСЕ"
+     , sc.psys_nm "КАТЕГОРИЯ АВНС/КРДТ"
+     , nvl(sc.trafic_01,0)  "ТРАФИК ЯНВАРЬ"
+     , nvl(sc.trafic_02,0)  "ТРАФИК ФЕВРАЛЬ" 
+     , nvl(sc.trafic_03,0)  "ТРАФИК МАРТ" 
+     , nvl(sc.trafic_04,0)  "ТРАФИК АПРЕЛЬ" 
+     , nvl(sc.trafic_05,0)  "ТРАФИК МАЙ" 
+     , nvl(sc.trafic_06,0)  "ТРАФИК ИЮНЬ"
+     , nvl(sc.trafic_07,0) "ТРАФИК ИЮЛЬ" 
+     , nvl(sc.trafic_08,0) "ТРАФИК АВГУСТ"  
+     , nvl(sc.trafic_09,0) "ТРАФИК СЕНТЯБРЬ" 
+     , nvl(sc.trafic_10,0) "ТРАФИК ОКТЯБРЬ"
+     , nvl(sc.trafic_11,0) "ТРАФИК НОЯБРЬ" 
+     , nvl(sc.trafic_12,0) "ТРАФИК ДЕКАБРЬ"   
+     , sc.rtpl_id
+  FROM crs.rep_abon_base_dmt_14819_14820 sc 
+ WHERE 1 = 1
+   AND sc.stnd_stnd_id = 150
+order by sc.account

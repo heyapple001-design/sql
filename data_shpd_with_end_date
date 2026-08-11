@@ -112,7 +112,6 @@ SELECT sc.jrtp_nm "ФЛ/ЮЛ"
   -- ПРИСОЕДИНЯЕМ ТАБЛИЦУ С ТАРИФНЫМИ ПЛАНАМИ
   LEFT JOIN bis.rate_plans rp
     ON rp.rtpl_id = sc.rtpl_id                    -- Связь по ID тарифного плана
-    AND SYSDATE BETWEEN rp.start_date AND rp.end_date  -- Берем только действующие на сегодня записи (как в вашем примере)
  WHERE 1 = 1
    AND sc.stnd_stnd_id = 150
  ORDER BY sc.account

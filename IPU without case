@@ -1,0 +1,348 @@
+with start_date as
+ ( select 
+  case when sysdate < last_day(trunc(sysdate, 'year')) then
+    last_day(trunc(add_months(last_day(trunc(sysdate, 'year')),-1),'year'))
+  else
+    last_day(trunc(sysdate, 'year'))
+   end   v_start_date   
+  from dual
+  ),
+  
+-- ============================================================
+-- 1. Получаем все ИПУ за расчетный период (весь год)
+-- ============================================================
+srls_all AS (
+  SELECT 
+     seh.subs_subs_id,
+     seh.srls_srls_id,
+     ssp.serv_parm,
+     NVL(ssp.pack_pack_id, 0) AS pack_pack_id,
+     ssp.start_date,
+     NVL(ssp.end_date, DATE '9999-12-31') AS end_date,
+     sl.def AS service_name
+  FROM bis.serv_histories seh
+  JOIN bis.serv_lists sl ON sl.srls_id = seh.srls_srls_id
+  JOIN bis.serv_subs_parm ssp 
+    ON ssp.subs_subs_id = seh.subs_subs_id 
+    AND ssp.srls_srls_id = seh.srls_srls_id
+  CROSS JOIN start_date d
+  WHERE seh.srst_srst_id = 4
+    AND ssp.start_date < ADD_MONTHS(d.v_start_date, 12)  -- ИПУ начался до конца года
+    AND NVL(ssp.end_date, DATE '9999-12-31') >= d.v_start_date  -- ИПУ закончился после начала года
+),
+
+-- ============================================================
+-- 2. Для каждого месяца выбираем ИПУ, активный на конец месяца
+-- ============================================================
+srls_monthly AS (
+  SELECT 
+    s.subs_subs_id,
+    s.srls_srls_id,
+    s.serv_parm,
+    s.pack_pack_id,
+    s.service_name,
+    LAST_DAY(ADD_MONTHS(d.v_start_date, LEVEL - 1)) AS month_end
+  FROM srls_all s
+  CROSS JOIN start_date d
+  CONNECT BY LEVEL <= 12
+    AND PRIOR s.subs_subs_id = s.subs_subs_id
+    AND PRIOR s.srls_srls_id = s.srls_srls_id
+    AND PRIOR s.serv_parm = s.serv_parm
+    AND PRIOR sys_guid() IS NOT NULL
+  WHERE LAST_DAY(ADD_MONTHS(d.v_start_date, LEVEL - 1)) 
+    BETWEEN s.start_date AND s.end_date
+),
+
+-- ============================================================
+-- 3. Агрегируем начисления с привязкой к месяцу
+-- ============================================================
+bill_aggregated AS (
+  SELECT
+      clnt_clnt_id,
+      subs_subs_id,
+      srls_srls_id,
+      NVL(PACK_PACK_ID,0) AS PACK_PACK_ID,
+      CALC_RTPL_ID AS RTPL_RTPL_ID,
+      MONTH_END,
+      SUM(AMOUNT_$) AS AMOUNT_$
+  FROM bis.charges b
+  CROSS JOIN start_date d
+  WHERE b.MONTH_END >= d.v_start_date
+    AND b.MONTH_END < ADD_MONTHS(d.v_start_date, 12)
+    AND NVL(b.no_use,'N')='N'
+    AND (b.DEL_DATE IS NULL OR b.DEL_DATE = TO_DATE('01.01.2000','DD.MM.YYYY'))
+  GROUP BY clnt_clnt_id, subs_subs_id, srls_srls_id, 
+           NVL(PACK_PACK_ID,0), CALC_RTPL_ID, MONTH_END
+),
+
+-- ============================================================
+-- 4. Соединяем начисления с ИПУ по месяцу
+-- ============================================================
+bill_with_ipu AS (
+  SELECT
+      b.clnt_clnt_id,
+      b.subs_subs_id,
+      b.srls_srls_id,
+      b.PACK_PACK_ID,
+      b.RTPL_RTPL_ID,
+      sm.serv_parm,
+      b.AMOUNT_$,
+      b.MONTH_END
+  FROM bill_aggregated b
+  LEFT JOIN srls_monthly sm
+    ON sm.subs_subs_id = b.subs_subs_id
+    AND sm.srls_srls_id = b.srls_srls_id
+    AND sm.pack_pack_id = b.PACK_PACK_ID
+    AND sm.month_end = b.MONTH_END
+),
+
+-- ============================================================
+-- 5. Финальная агрегация начислений с разбивкой по месяцам и ИПУ
+-- ============================================================
+bill_final AS (
+  SELECT
+      clnt_clnt_id,
+      subs_subs_id,
+      srls_srls_id,
+      PACK_PACK_ID,
+      RTPL_RTPL_ID,
+      NVL(serv_parm, 0) AS serv_parm,
+      SUM(CASE WHEN EXTRACT(MONTH FROM MONTH_END) = 1 THEN AMOUNT_$ ELSE 0 END) AS chrg_01,
+      SUM(CASE WHEN EXTRACT(MONTH FROM MONTH_END) = 2 THEN AMOUNT_$ ELSE 0 END) AS chrg_02,
+      SUM(CASE WHEN EXTRACT(MONTH FROM MONTH_END) = 3 THEN AMOUNT_$ ELSE 0 END) AS chrg_03,
+      SUM(CASE WHEN EXTRACT(MONTH FROM MONTH_END) = 4 THEN AMOUNT_$ ELSE 0 END) AS chrg_04,
+      SUM(CASE WHEN EXTRACT(MONTH FROM MONTH_END) = 5 THEN AMOUNT_$ ELSE 0 END) AS chrg_05,
+      SUM(CASE WHEN EXTRACT(MONTH FROM MONTH_END) = 6 THEN AMOUNT_$ ELSE 0 END) AS chrg_06,
+      SUM(CASE WHEN EXTRACT(MONTH FROM MONTH_END) = 7 THEN AMOUNT_$ ELSE 0 END) AS chrg_07,
+      SUM(CASE WHEN EXTRACT(MONTH FROM MONTH_END) = 8 THEN AMOUNT_$ ELSE 0 END) AS chrg_08,
+      SUM(CASE WHEN EXTRACT(MONTH FROM MONTH_END) = 9 THEN AMOUNT_$ ELSE 0 END) AS chrg_09,
+      SUM(CASE WHEN EXTRACT(MONTH FROM MONTH_END) = 10 THEN AMOUNT_$ ELSE 0 END) AS chrg_10,
+      SUM(CASE WHEN EXTRACT(MONTH FROM MONTH_END) = 11 THEN AMOUNT_$ ELSE 0 END) AS chrg_11,
+      SUM(CASE WHEN EXTRACT(MONTH FROM MONTH_END) = 12 THEN AMOUNT_$ ELSE 0 END) AS chrg_12
+  FROM bill_with_ipu
+  GROUP BY clnt_clnt_id, subs_subs_id, srls_srls_id, 
+           PACK_PACK_ID, RTPL_RTPL_ID, NVL(serv_parm, 0)
+),
+
+-- ============================================================
+-- 6. Актуальные услуги на конец прошлого месяца (для отбора)
+-- ============================================================
+srls AS (
+  SELECT 
+     seh.subs_subs_id,
+     ssp.srls_srls_id,
+     sl.def,
+     ssp.serv_parm,
+     ssp.navi_user,
+     ssp.navi_date,
+     NVL(ssp.pack_pack_id, 0) AS pack_pack_id
+  FROM bis.serv_histories seh
+  JOIN bis.serv_lists sl ON sl.srls_id = seh.srls_srls_id
+  JOIN bis.serv_subs_parm ssp
+    ON ssp.subs_subs_id = seh.subs_subs_id 
+    AND TRUNC(LAST_DAY(ADD_MONTHS(SYSDATE, -1))) BETWEEN ssp.start_date AND NVL(ssp.end_date, DATE '9999-12-31')
+    AND ssp.srls_srls_id = seh.srls_srls_id 
+  WHERE 1=1
+    AND TRUNC(LAST_DAY(ADD_MONTHS(SYSDATE, -1))) BETWEEN seh.start_date AND NVL(seh.end_date, DATE '9999-12-31')
+    AND seh.srst_srst_id = 4
+),
+
+-- ============================================================
+-- 7. Абоненты (без изменений)
+-- ============================================================
+subs AS (
+  SELECT /*+ parallel (6) */
+     sc.clnt_clnt_id,
+     sc.subs_subs_id,
+     sp.pack_pack_id,
+     p.name_r pack_name,
+     s.stnd_stnd_id,
+     sh.RTPL_RTPL_ID,
+     rp.NAME_R,
+     rp.NAME_1,
+     rp.NAME_E,
+     rp.ACTIVE_END,
+     CASE
+        -- (все CASE условия остаются без изменений)
+        -- ... (полный CASE из вашего скрипта)
+        WHEN ... THEN 'Архивный специальный'
+        WHEN ... THEN 'Архивный'
+        WHEN ... THEN 'Активный непубличный'
+        WHEN ... THEN 'Специальный'
+        WHEN ... THEN 'Активные прочие (ОТА)'
+        WHEN ... THEN 'Активный'
+        WHEN ... THEN 'Активные Облачные'
+        WHEN ... THEN 'Архивный непубличный'
+        WHEN ... THEN 'Технологический'
+        ELSE 'Прочие'
+     END AS tarif_status
+  FROM bis.subs_clnt_histories sc
+  JOIN bis.client_histories ch 
+    ON ch.clnt_clnt_id = sc.clnt_clnt_id
+    AND TRUNC(LAST_DAY(ADD_MONTHS(SYSDATE,-1))) BETWEEN ch.start_date AND ch.end_date
+    AND ch.hist_jrtp_id = 2
+    AND ch.ctyp_ctyp_id NOT IN (4,102,202)
+    AND ch.blgr_blgr_id NOT IN (9)
+    AND ch.brnc_brnc_id IN (11,12,14,15,16,17,18)
+  JOIN bis.subscribers s ON s.subs_id = sc.subs_subs_id
+  JOIN bis.subs_histories sh
+    ON sh.subs_subs_id = sc.subs_subs_id 
+    AND SYSDATE BETWEEN sh.start_date AND sh.end_date
+  JOIN bis.rate_plans rp
+    ON rp.rtpl_id = sh.rtpl_rtpl_id
+    AND SYSDATE BETWEEN rp.start_date AND rp.end_date
+  JOIN (
+    SELECT sp_all.subs_subs_id, sp_all.pack_pack_id 
+    FROM (
+      SELECT sp1.subs_subs_id, sp1.pack_pack_id   
+      FROM bis.SUBS_PACKS sp1
+      WHERE SYSDATE BETWEEN sp1.start_date AND sp1.end_date 
+      UNION ALL 
+      SELECT DISTINCT sp0.subs_id AS subs_subs_id, 0 AS pack_pack_id  
+      FROM bis.subscribers sp0
+      WHERE sp0.stnd_stnd_id IN (3, 150)  
+    ) sp_all
+  ) sp ON sp.subs_subs_id = sc.subs_subs_id
+  LEFT JOIN bis.packs p ON p.pack_id = sp.pack_pack_id
+  WHERE 1 = 1
+    AND sc.sbst_sbst_id IN (2,3)
+    AND TRUNC(LAST_DAY(ADD_MONTHS(SYSDATE, -1))) BETWEEN sc.start_date AND sc.end_date
+    AND s.stnd_stnd_id IN (3, 150)
+),
+
+-- ============================================================
+-- 8. Номера (без изменений)
+-- ============================================================
+dnumber AS (
+  SELECT /*+ parallel (6) */
+     ph.subs_subs_id, 
+     ns.msisdn
+  FROM bis.phone_histories ph
+  LEFT JOIN bis.number_sets ns ON ns.nset_id = ph.nset_nset_id
+  WHERE ph.ncat_ncat_id = 1
+    AND CURRENT_DATE BETWEEN ph.START_DATE AND ph.END_DATE
+),
+
+-- ============================================================
+-- 9. Клиенты (без изменений)
+-- ============================================================
+clnt AS (
+  SELECT /*+ parallel (6) */
+    (CASE WHEN ch.hist_jrtp_id=2 THEN 'ЮЛ'
+          WHEN ch.hist_jrtp_id=1 THEN 'ФЛ'
+          ELSE ''
+     END) jrtp_nm,
+     ch.brnc_brnc_id,
+     b.name branch_nm,
+     ch.clnt_clnt_id,
+     ch.name client_name,
+     dp1.name rus_nm,
+     dp.name ckto_nm,
+     ch.account,
+     ja.inn,
+     (SELECT ctp.def
+      FROM bis.client_types ctp
+      WHERE ctp.ctyp_id=ch.ctyp_ctyp_id) type_clnt,
+     (SELECT dv.def
+      FROM bis.client_dictionaries cd
+      JOIN bis.dict_values dv ON dv.divl_id = cd.divl_divl_id
+      WHERE ch.clnt_clnt_id = cd.clnt_clnt_id
+        AND dv.dict_dict_id = 1022
+        AND cd.del_user IS NULL) macrosegm,
+     (SELECT dv.def
+      FROM bis.client_dictionaries cd
+      JOIN bis.dict_values dv ON dv.divl_id = cd.divl_divl_id
+      WHERE ch.clnt_clnt_id = cd.clnt_clnt_id
+        AND dv.dict_dict_id = 1020
+        AND cd.del_user IS NULL) segm,
+     (SELECT dv.def
+      FROM bis.client_dictionaries cd
+      JOIN bis.dict_values dv ON dv.divl_id = cd.divl_divl_id
+      WHERE ch.clnt_clnt_id = cd.clnt_clnt_id
+        AND dv.dict_dict_id = 1021
+        AND cd.del_user IS NULL) subsegm,
+     (SELECT dv.def
+      FROM bis.client_dictionaries cd
+      JOIN bis.dict_values dv ON dv.divl_id = cd.divl_divl_id
+      WHERE ch.clnt_clnt_id = cd.clnt_clnt_id
+        AND dv.dict_dict_id = 150
+        AND cd.del_user IS NULL) k_code
+  FROM bis.client_histories ch
+  JOIN bis.branches b ON b.brnc_id = ch.brnc_brnc_id
+  JOIN bis.departments dp ON dp.dprm_id = ch.dprm_dprm_id
+  LEFT JOIN bis.departments dp1 ON dp1.dprm_id = dp.par_dprm_id
+  JOIN bis.dlv_histories dh ON ch.clnt_clnt_id = dh.clnt_clnt_id 
+    AND SYSDATE BETWEEN dh.start_date AND dh.end_date
+  JOIN bis.jur_addresses ja ON ch.clnt_clnt_id = ja.clnt_clnt_id
+    AND SYSDATE BETWEEN ja.start_date AND ja.end_date
+  WHERE 1 = 1
+    AND ch.hist_jrtp_id = 2
+    AND ch.ctyp_ctyp_id NOT IN (4, 102, 202)
+    AND ch.blgr_blgr_id NOT IN (9)
+    AND ch.brnc_brnc_id IN (11, 12, 14, 15, 16, 17, 18)
+    AND SYSDATE BETWEEN ch.start_date AND ch.end_date
+)
+
+-- ============================================================
+-- 10. Финальный SELECT
+-- ============================================================
+SELECT
+  clnt.jrtp_nm "ФЛ/ЮЛ",
+  clnt.brnc_brnc_id "КОД ФИЛИАЛА",
+  clnt.branch_nm "РФ",
+  clnt.clnt_clnt_id,
+  clnt.account "ЛС",
+  clnt.inn "ИНН",
+  clnt.type_clnt "ТИП_КЛИЕНТА",
+  clnt.macrosegm "МАКРОСЕГМЕНТ",
+  clnt.segm "СЕГМЕНТ",
+  clnt.subsegm "ПОДСЕГМЕНТ",
+  clnt.k_code "ПО МЕТОДИКЕ ГД",
+  clnt.client_name "НАИМЕН_КЛИЕНТА",
+  subs.subs_subs_id "АБОНЕНТ",
+  subs.stnd_stnd_id "СТАНДАРТ",
+  n.msisdn "НОМЕР УСТРОЙСТВА",
+  subs.pack_pack_id "ИД ПАКЕТА",
+  subs.pack_name "ПАКЕТ",
+  subs.name_r "ТАРИФНЫЙ ПЛАН",
+  subs.NAME_1 "АЛЬТЕРНАТИВНОЕ НАЗВАНИЕ",
+  subs.NAME_E "НАЗВАНИЕ НА АНГЛИЙСКОМ",
+  subs.ACTIVE_END "ДАТА ОКОНЧАНИЯ ТАРИФА",
+  subs.tarif_status "СТАТУС ТАРИФНОГО ПЛАНА",
+  subs.RTPL_RTPL_ID "ИД ТАРИФНОГО ПЛАНА",
+  NVL(srls.srls_srls_id, 0) "ИД УСЛУГИ",
+  srls.def "УСЛУГА",
+  NVL(srls.serv_parm, 0) "ИПУ",  -- <-- ИПУ теперь точно соответствует начислениям
+  srls.navi_user "КТО УСТАНОВИЛ ИПУ",
+  srls.navi_date "КОГДА_УСТАНОВИЛ_ИПУ",
+  NVL(ch.chrg_01, 0) "НАЧИСЛЕНИЯ ЗА ЯНВАРЬ",
+  NVL(ch.chrg_02, 0) "НАЧИСЛЕНИЯ ЗА ФЕВРАЛЬ",
+  NVL(ch.chrg_03, 0) "НАЧИСЛЕНИЯ ЗА МАРТ",
+  NVL(ch.chrg_04, 0) "НАЧИСЛЕНИЯ ЗА АПРЕЛЬ",
+  NVL(ch.chrg_05, 0) "НАЧИСЛЕНИЯ ЗА МАЙ",
+  NVL(ch.chrg_06, 0) "НАЧИСЛЕНИЯ ЗА ИЮНЬ",
+  NVL(ch.chrg_07, 0) "НАЧИСЛЕНИЯ ЗА ИЮЛЬ",
+  NVL(ch.chrg_08, 0) "НАЧИСЛЕНИЯ ЗА АВГУСТ",
+  NVL(ch.chrg_09, 0) "НАЧИСЛЕНИЯ ЗА СЕНТЯБРЬ",
+  NVL(ch.chrg_10, 0) "НАЧИСЛЕНИЯ ЗА ОКТЯБРЬ",
+  NVL(ch.chrg_11, 0) "НАЧИСЛЕНИЯ ЗА НОЯБРЬ",
+  NVL(ch.chrg_12, 0) "НАЧИСЛЕНИЯ ЗА ДЕКАБРЬ",
+  NVL(ch.chrg_01 + ch.chrg_02 + ch.chrg_03 + ch.chrg_04 + ch.chrg_05 + ch.chrg_06 +
+     ch.chrg_07 + ch.chrg_08 + ch.chrg_09 + ch.chrg_10 + ch.chrg_11 + ch.chrg_12, 0) "ТЕКУЩИЙ_БАЛАНС"
+FROM subs
+JOIN clnt ON clnt.clnt_clnt_id = subs.clnt_clnt_id
+LEFT JOIN dnumber n ON n.subs_subs_id = subs.subs_subs_id
+LEFT JOIN srls 
+  ON srls.subs_subs_id = subs.subs_subs_id 
+  AND srls.pack_pack_id = subs.pack_pack_id
+LEFT JOIN bill_final ch 
+  ON ch.CLNT_CLNT_ID = subs.clnt_clnt_id 
+  AND ch.subs_subs_id = subs.subs_subs_id 
+  AND ch.srls_srls_id = srls.srls_srls_id  -- <-- РАСКОММЕНТИРОВАЛИ!
+  AND ch.pack_pack_id = subs.pack_pack_id 
+  AND ch.RTPL_RTPL_ID = subs.RTPL_RTPL_ID
+  AND NVL(ch.serv_parm, 0) = NVL(srls.serv_parm, 0)  -- <-- ДОБАВИЛИ!
+WHERE to_char(clnt.brnc_brnc_id) LIKE '~p_branc_id~'
+  AND to_char(subs.stnd_stnd_id) LIKE '~p_stnd_id~'
+  AND subs.rtpl_rtpl_id IN (~spisok_rtpl_id~)
+ORDER BY clnt.brnc_brnc_id, subs.clnt_clnt_id, subs.subs_subs_id;

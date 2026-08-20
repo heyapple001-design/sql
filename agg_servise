@@ -1,0 +1,55 @@
+Блок 4 (bill_with_ipu) — исправляем соединение:
+
+```sql
+bill_with_ipu AS (
+  SELECT
+      b.clnt_clnt_id,
+      b.subs_subs_id,
+      b.srls_srls_id,
+      b.PACK_PACK_ID,
+      b.RTPL_RTPL_ID,
+      NVL(sm.serv_parm, 0) AS serv_parm,
+      b.AMOUNT_$,
+      b.MONTH_END
+  FROM bill_aggregated b
+  LEFT JOIN srls_monthly sm
+    ON sm.subs_subs_id = b.subs_subs_id
+    AND sm.srls_srls_id = b.srls_srls_id
+    AND sm.month_end = b.MONTH_END
+    -- ★ КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: соединяем по пакету ТОЛЬКО если он не ноль
+    AND (sm.pack_pack_id = b.PACK_PACK_ID 
+         OR (b.PACK_PACK_ID = 0 AND sm.pack_pack_id = 0))
+),
+```
+
+Блок 5 (bill_final) — возвращаем группировку по пакету:
+
+```sql
+bill_final AS (
+  SELECT
+      clnt_clnt_id,
+      subs_subs_id,
+      srls_srls_id,
+      PACK_PACK_ID,  -- ★ ВОЗВРАЩАЕМ в GROUP BY
+      RTPL_RTPL_ID,
+      NVL(serv_parm, 0) AS serv_parm,
+      SUM(CASE WHEN EXTRACT(MONTH FROM MONTH_END) = 1 THEN AMOUNT_$ ELSE 0 END) AS chrg_01,
+      SUM(CASE WHEN EXTRACT(MONTH FROM MONTH_END) = 2 THEN AMOUNT_$ ELSE 0 END) AS chrg_02,
+      -- ... (остальные месяцы)
+      SUM(CASE WHEN EXTRACT(MONTH FROM MONTH_END) = 12 THEN AMOUNT_$ ELSE 0 END) AS chrg_12
+  FROM bill_with_ipu
+  GROUP BY clnt_clnt_id, subs_subs_id, srls_srls_id, PACK_PACK_ID, RTPL_RTPL_ID, NVL(serv_parm, 0)
+),
+```
+
+Блок 10 (финальный LEFT JOIN) — соединяем по полному ключу:
+
+```sql
+LEFT JOIN bill_final ch 
+  ON ch.CLNT_CLNT_ID = subs.clnt_clnt_id 
+  AND ch.subs_subs_id = subs.subs_subs_id 
+  AND ch.srls_srls_id = srls.srls_srls_id
+  AND ch.PACK_PACK_ID = srls.pack_pack_id  -- ★ Соединяем по пакету
+  AND ch.RTPL_RTPL_ID = subs.RTPL_RTPL_ID
+  AND NVL(ch.serv_parm, 0) = NVL(srls.serv_parm, 0)
+```
